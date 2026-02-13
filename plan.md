@@ -1,149 +1,250 @@
-ARC Raiders Bot – Kopierbare Anweisungen für Sonnet
+# ARC Raiders Discord Bot (JDA) – Spec (.md) für Sonnet
+**Stack:** Java 17+, JDA, `java.net.http.HttpClient`, Gson, Jsoup (optional Playwright-Fallback), keine SQL-DB.
 
-ZIEL
-- Nutze die MetaForge ARC Raiders API, um einen Discord-Bot zu bauen, der:
-    1) Eine persistente “Trials-Events”-Übersicht als EIN Message-Embed verwaltet (immer editieren).
-    2) In dieser Übersicht die relevanten Events (Night Raid, Electromagnetic Storm, Hidden Bunker, Locked Gate, Cold Snap) als einzelne Embeds darstellt: pro Event 1 Embed.
-    3) Nur Termine im Zeitfenster 15:00–02:00 (Europe/Berlin) anzeigt.
-    4) Stark auf Caching setzt, um API Calls zu minimieren (keine SQL/DB).
+---
 
-API (MetaForge)
-- Base URL: https://metaforge.app/api/arc-raiders
-- Events Endpoint: GET /api/arc-raiders/events-schedule
-- Response: { data: [ { name, map, icon, startTime, endTime }, ... ], cachedAt }
+## Ziele
 
-WICHTIG: Die Zeitstempel startTime/endTime sind Unix epoch in Millisekunden (UTC). Für Anzeige/Filter immer nach Europe/Berlin konvertieren.
+### 1) Weekly Trials (Scrape)
+- Quelle: `https://metaforge.app/arc-raiders/weekly-trials`
+- Zeitplan: **jeden Montag 09:00 (Europe/Berlin)**
+- Verhalten:
+  - Bot postet **eine neue** Trials-Nachricht in den konfigurierten Trials-Channel
+  - **Vorherige Trials-Bot-Nachricht wird gelöscht**, bevor die neue gesendet wird (siehe Permissions)
+  - Optional: Wenn Trials-Channel ein **Announcement Channel** ist, kann die Nachricht **gepublished/crossposted** werden, damit andere Server dem Channel folgen können
 
-RELEVANTE EVENTS (Whitelist)
-- Night Raid
-- Electromagnetic Storm
-- Hidden Bunker
-- Locked Gate
-- Cold Snap
+### 2) Events Overview (API, persistente Nachricht)
+- Quelle: MetaForge API
+- In einem konfigurierten Events-Channel existiert **genau eine Bot-Nachricht**, die **immer editiert** wird
+- Die Nachricht enthält **5 Embeds (pro Event eins)** und zeigt nur Slots im Fenster **15:00–02:00 (Europe/Berlin)**
 
-ZEITFENSTER FILTER (15:00–02:00 Europe/Berlin)
-- Zeige nur Event-Slots, deren lokaler Start (Europe/Berlin) in folgendem “Nachtfenster” liegt:
-    - entweder zwischen 15:00 und 23:59 des Tages
-    - oder zwischen 00:00 und 02:00 des Folgetages
-- Praktisch: Filterlogik über lokale Uhrzeit (HH:mm) + Datum berücksichtigen.
-- Empfehlung: Für “heute” immer ein Fenster bilden:
-    - windowStart = heute 15:00 (Berlin)
-    - windowEnd   = morgen 02:00 (Berlin)
-    - Zeige Events, die im Intervall [windowStart, windowEnd] liegen (StartTime innerhalb oder Overlap; Overlap ist besser).
+---
 
-CACHING (KEINE SQL)
-- Nutze 2-stufiges Caching:
-    1) In-Memory Cache (schnell)
-    2) File Cache (cache.json), damit Neustarts nicht sofort wieder die API spammen
+## Commands (Slash)
 
-Cache-Key für Events:
-- key: "eventsSchedule"
-- value: { fetchedAtMs, expiresAtMs, payload, contentHash }
-- TTL:
-    - Events Schedule TTL: 10 Minuten (oder 5–15 min konfigurierbar)
-- Wenn Cache gültig => KEIN API Call.
-- Wenn Cache abgelaufen => API Call, Cache neu schreiben.
-- Zusätzlicher Schutz:
-    - Change detection per Hash (z.B. hash über gefilterte/normalisierte Eventliste ohne “last updated timestamp”)
-    - Discord-Edit nur ausführen, wenn sich Hash ändert.
+### `/trials channel:<#channel>`
+- Setzt den Channel für Weekly Trials
+- Speichert `weeklyChannelId` in `config.json`
+- Optional: kann nach Setzen direkt einen “Testpost” machen (nicht erforderlich)
 
-HINWEIS: Die API liefert “cachedAt”. Das ist kein HTTP-ETag, aber du kannst es für Debug/Anzeige nutzen. Trotzdem TTL lokal erzwingen.
+### `/events channel:<#channel>`
+- Setzt den Channel für Events Overview
+- Speichert `eventsChannelId`
+- Erstellt die persistente Overview-Nachricht (falls nicht vorhanden) und speichert `eventsMessageId`
 
-AUSGABE / DISCORD EMBEDS
-- Es soll “Pro Event ein Embed” geben.
-- Alle Embeds werden in EINER Bot-Nachricht gepostet (mehrere Embeds in einer Message) und später immer editiert.
-- Reihenfolge der Embeds:
-    1) Night Raid
-    2) Electromagnetic Storm
-    3) Hidden Bunker
-    4) Locked Gate
-    5) Cold Snap
+### `/refresh`
+- Forciert ein sofortiges Refresh der Events Overview Message (ohne TTL)
+- Antwort ephemeral: Erfolg/Fehler
 
-Embed Inhalt (pro Event)
-- Title: "<Event Name>"
-- Thumbnail: event.icon (wenn vorhanden)
-- Description: Kurz + Zeitfenster z.B. "Termine zwischen 15:00–02:00 (Europe/Berlin)"
-- Fields:
-    - pro Termin eine Zeile im Field-Value, gruppiert nach Map:
-      Format-Beispiel:
-      Dam: 18:00–19:00, 21:00–22:00
-      Spaceport: 19:00–20:00
-      ...
-    - oder alternativ: pro Map ein Field (Name=Map, Value=Liste der Times)
-- Footer:
-    - "Last updated: <Berlin datetime>"
-    - optional: "Source cachedAt: <cachedAt>"
+> Hinweis: Es gibt **kein** Setup-Command mehr – die Channel-Settings passieren über `/trials` und `/events`.
+
+---
+
+## Datenquellen
+
+### A) Events API (MetaForge)
+- Base URL: `https://metaforge.app/api/arc-raiders`
+- Endpoint: `GET /api/arc-raiders/events-schedule`
+- Response:
+```json
+{
+  "data": [
+    { "name": "Matriarch", "map": "Dam", "icon": "https://...", "startTime": 1770890400000, "endTime": 1770894000000 }
+  ],
+  "cachedAt": 1770892101739
+}
+```
+
+#### Relevante Events (Whitelist)
+Nur diese Events anzeigen:
+- `Night Raid`
+- `Electromagnetic Storm`
+- `Hidden Bunker`
+- `Locked Gate`
+- `Cold Snap`
+
+#### Zeitfenster Filter (15:00–02:00 Europe/Berlin)
+- `startTime/endTime` sind **epoch ms (UTC)**
+- Konvertiere konsequent nach `Europe/Berlin` (DST beachten)
+- Definiere Fenster:
+  - `windowStart = heute 15:00 (Berlin)`
+  - `windowEnd   = morgen 02:00 (Berlin)`
+- Zeige Event-Slots, die das Fenster **überlappen**:
+  - `eventStart < windowEnd && eventEnd > windowStart`
+
+---
+
+### B) Weekly Trials (Scrape)
+- URL: `https://metaforge.app/arc-raiders/weekly-trials`
+- Scrape-Strategie:
+  1) **Jsoup Fast Path:** HTML laden + Trials aus DOM oder aus JSON in `<script>` extrahieren
+  2) **Fallback (optional):** Wenn keine Trials gefunden werden (client-rendered), Playwright laden und nach Rendern extrahieren
+
+> Trials-Format ist nicht offiziell dokumentiert; Scraper muss robust sein (tolerant gegen DOM Änderungen).
+
+---
+
+## Discord Output
+
+### A) Events Overview: 1 Message, 5 Embeds (immer editieren)
+- Genau **eine** Bot-Message im `eventsChannelId`
+- Diese Message hat **5 Embeds** in fester Reihenfolge:
+  1. Night Raid
+  2. Electromagnetic Storm
+  3. Hidden Bunker
+  4. Locked Gate
+  5. Cold Snap
+
+**Embed-Layout pro Event**
+- `title`: Event-Name
+- `thumbnail`: `icon` (falls vorhanden)
+- `description`: `Termine 15:00–02:00 (Europe/Berlin)`
+- Inhalt: Termine **inkl. Map**, z.B. gruppiert nach Map:
+  - `Dam: 18:00–19:00, 21:00–22:00`
+  - `Spaceport: 19:00–20:00`
+- `footer`: `Last updated: <Berlin datetime> | source cachedAt: <cachedAt>`
 
 Wenn keine Termine im Zeitfenster:
-- Embed soll trotzdem existieren:
-    - Description: "Keine Termine im Zeitfenster 15:00–02:00."
-    - Footer bleibt.
+- Embed bleibt bestehen:
+  - `description`: `Keine Termine im Zeitfenster 15:00–02:00.`
 
-DATENAUFBEREITUNG
-1) API payload.data laden
-2) Filtern auf name in Whitelist
-3) Zeitfenster-Filter anwenden (Berlin)
-4) Gruppieren: by (eventName -> map -> [timeRanges])
-5) timeRange anzeigen als "HH:mm–HH:mm" in Berlin
-6) Sortierung pro Map nach startTime aufsteigend
+---
 
-PERSISTENTE MESSAGE (Events Overview)
-- Setup Command: /setup events_channel:#trials-info
-    - Bot sendet initial eine Message mit 5 Embeds (auch wenn leer).
-    - Speichere events_channel_id und events_message_id in config.json.
-- Refresh Job:
-    - alle 10 Minuten:
-        - getEventsScheduleCached()
-        - buildEmbeds()
-        - wenn contentHash unverändert => NICHT editieren
-        - sonst editMessage(events_channel_id, events_message_id, embeds)
+### B) Weekly Trials: neue Nachricht, vorherige löschen
+- Bot speichert `weeklyLastMessageId` (pro Guild) in `config.json`
+- Montags:
+  1) wenn `weeklyLastMessageId` existiert: **löschen**
+  2) neue Trials-Message senden
+  3) neue Message-ID speichern als `weeklyLastMessageId`
+  4) optional: Wenn Channel ein Announcement Channel ist, **crosspost/publish** (siehe Permissions)
 
-Fehlerfälle:
-- Wenn Message gelöscht / nicht gefunden:
-    - neue Message posten
-    - neue message_id in config.json speichern
-- Wenn API down:
-    - nutze letzten Cache (auch wenn expired) als Fallback
-    - Footer: "Source unavailable – showing last known data"
-- Permissions fehlen:
-    - loggen und Admin-Hinweis senden (optional)
+---
 
-TRIALS
-- Für Trials gibt es noch keine API Doku.
-- Implementiere Trials-Teil als Platzhalter/Interface:
-    - fetchWeeklyTrials(): TODO
-    - buildWeeklyTrialsEmbed(): TODO
-- Architektur so bauen, dass Trials später einfach ergänzt werden kann (ohne Refactor).
+## Caching (ohne SQL) – Pflicht
 
-KONFIG DATEIEN
-- config.json (pro guild):
-  {
+### Ziele
+- API & Scrape Calls minimieren
+- Discord Edits minimieren (Rate Limits)
+
+### Mechanik
+- 2-stufig:
+  1) In-Memory Cache
+  2) File Cache `cache.json` (überlebt Neustarts)
+- TTL:
+  - Events Schedule: **10 Minuten**
+  - Weekly Trials Scrape: **12–24 Stunden** (konfigurierbar)
+- Change-Detection:
+  - Hash über **normalisierte** Daten (sortiert, whitespace-trim, ohne “Last updated”)
+  - Events: wenn Hash gleich → **kein editMessageEmbeds()**
+  - Trials: TTL + optional Monday-force (nur Montag 09:00 einmal forcieren)
+
+### Fallback
+- Quelle down:
+  - Nutze letzten Cache auch wenn expired
+  - Footer Hinweis: `Source unavailable – showing last known data`
+
+---
+
+## Scheduling
+
+### A) Events Refresh Job
+- Alle **10 Minuten**
+- Flow:
+  1) `getEventsScheduleCached(TTL=10m)`
+  2) whitelist + timeWindow(15:00–02:00 Berlin)
+  3) build 5 embeds
+  4) nur editieren wenn Hash changed
+
+### B) Weekly Trials Job
+- **Montag 09:00 Europe/Berlin**
+- Flow:
+  1) `getWeeklyTrialsCached(TTL=12–24h; optional Monday-force)`
+  2) wenn `weeklyLastMessageId` vorhanden → löschen
+  3) neue Trials message senden
+  4) optional publish bei Announcement Channel
+
+---
+
+## Persistenz (JSON Files)
+
+### `config.json` (Beispiel)
+```json
+{
   "guilds": {
-  "<guildId>": {
-  "events_channel_id": "<id>",
-  "events_message_id": "<id>"
+    "GUILD_ID": {
+      "weeklyChannelId": "CHANNEL_ID",
+      "eventsChannelId": "CHANNEL_ID",
+      "eventsMessageId": "MESSAGE_ID",
+      "weeklyLastMessageId": "MESSAGE_ID"
+    }
   }
-  }
-  }
+}
+```
 
-- cache.json:
-  {
+### `cache.json` (Beispiel)
+```json
+{
   "eventsSchedule": {
-  "fetchedAtMs": 0,
-  "expiresAtMs": 0,
-  "contentHash": "<hash>",
-  "payload": { ...apiResponse }
+    "fetchedAtMs": 0,
+    "expiresAtMs": 0,
+    "contentHash": "abc",
+    "payload": { "data": [], "cachedAt": 0 }
+  },
+  "weeklyTrials": {
+    "fetchedAtMs": 0,
+    "expiresAtMs": 0,
+    "contentHash": "def",
+    "payload": { "trials": [], "fetchedAtMs": 0 }
   }
-  }
+}
+```
 
-NON-FUNCTIONAL
-- Rate-limit friendly:
-    - Keine häufigeren Calls als TTL
-    - Keine unnötigen Discord Edits (Hash-Vergleich)
-- Timezone muss Europe/Berlin sein (DST beachten).
-- Keine SQL/DB.
+**File I/O**
+- Atomic write: temp file → move/replace
+- Synchronisiertes Schreiben (Jobs parallel)
 
-IMPLEMENTATION HINWEISE (kurz)
-- Verwende einen robusten HTTP Client mit Timeout + Retry (z.B. 5s timeout, 1–2 retries).
-- JSON parsing muss fehlertolerant sein.
-- Logging: letzte erfolgreiche Fetch-Zeit + letzte Edit-Zeit.
+---
+
+## HttpClient Regeln
+- Singleton `HttpClient`
+- Request timeout ~10s, connect timeout ~5–10s
+- Retries max 2 bei IO/5xx/429
+- 429:
+  - `Retry-After` respektieren, sonst Backoff (z.B. 500ms, 1500ms)
+- User-Agent setzen: `ARC-Raiders-DiscordBot/1.0`
+
+---
+
+## Permissions (Discord) – wichtig
+
+### Für Events (editieren)
+- `Send Messages`
+- `Embed Links`
+- `Read Message History` (um Message zu laden/validieren)
+
+### Für Weekly Trials “delete previous message”
+- **Delete Message erfordert `Manage Messages`.** citeturn0search6  
+  → Wenn du **wirklich** vorherige Message löschen willst, muss der Bot **Manage Messages** im Trials-Channel haben.  
+  Alternative (falls du Manage Messages nicht geben willst): statt delete → **edit** der vorherigen Trials-Message.
+
+### Announcement Channel / Publish / Crosspost
+- Discord Announcement Channels können gepostet und “published” werden, wenn die passenden Rechte gesetzt sind. citeturn0search11turn0search17
+  - Empfehlung: Wenn `channel.isNews()` (JDA) → nach dem Senden optional `message.crosspost()` aufrufen (permission-gated; bei fehlenden Rechten skip + log).
+
+---
+
+## Projektstruktur (Empfehlung)
+- `api/` (HttpClient wrapper, DTOs)
+- `cache/` (CacheService, file persistence, hashing)
+- `scrape/` (WeeklyTrialsScraper)
+- `discord/` (EmbedBuilder, Message edit/post/delete/crosspost)
+- `jobs/` (EventsRefreshJob, WeeklyTrialsJob)
+- `commands/` (`/trials`, `/events`, `/refresh`)
+
+---
+
+## TODO (Trials Scrape)
+- DOM/Selectoren finalisieren:
+  - Sobald klar ist, wie Trials im HTML strukturiert sind:
+    - robuste Jsoup Selectoren implementieren
+    - Playwright nur als Fallback, wenn serverseitig keine Trials-Infos vorhanden sind
